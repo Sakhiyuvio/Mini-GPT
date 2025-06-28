@@ -41,16 +41,19 @@ class Dataset:
         
         return book_text.strip()
 
-    def build_corpus(self, text):
+    def build_corpus(self):
         corpus = ""
         for title, book_id in books_dir.items():
             curr_book_txt = self.get_book_txt(book_id)
             cleaned_book_txt = self.clean_txt(curr_book_txt)
             # add to corpus for data processing
             corpus += f"\n\n### {title}\n\n{cleaned_book_txt}\n\n"
-        
-        return corpus
-        
+
+        with open(self.output_path, "w", encoding="utf-8") as f:
+            f.write(corpus)
+            
+        self.logger.info(f"Corpus written to {self.output_path}")
+
         
 
             
