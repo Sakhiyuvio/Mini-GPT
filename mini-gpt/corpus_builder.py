@@ -16,12 +16,12 @@ class Dataset:
     def __init__(self, output_path: str):
         self.output_path = output_path 
         self.logger = logging.Logger("Dataset:")
-        logging.basicConfig(logging.INFO)
+        logging.basicConfig(level=logging.INFO)
     
     def get_book_txt(self, book_id: int): 
         http_url = f"https://www.gutenberg.org/cache/epub/{book_id}/pg{book_id}.txt"
         try:
-            self.logger.info(f"Downloading text file for book {books_dir[book_id]}")
+            self.logger.info(f"Downloading text file for book ID{book_id}")
             response = requests.get(http_url)
             response.raise_for_status()
             return response.text
