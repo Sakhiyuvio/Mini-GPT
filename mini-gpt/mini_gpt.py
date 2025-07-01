@@ -4,7 +4,9 @@ import os
 import torch
 
 from corpus_builder import Dataset
+from dataclasses import dataclass
 from enum import Enum
+from torch import nn
 from typing import List
 """
 Making auto-regressive language model from scratch! 
@@ -29,7 +31,13 @@ class DataType(Enum):
 
     def __str__(self):
         return self.value
-
+    
+@dataclass
+class MiniGPTParams:
+    window_size: int = 32  # context window size for the model, number of tokens to look back
+    batch_size: int = 16  # batch size for training in parallel
+    embedding_dim: int = 32  # dimension of the embedding vector
+    
 class Tokenizer:
     def __init__(self, corpus_text: str):
         self.characters = sorted(list(set(corpus_text)))
@@ -45,13 +53,47 @@ class Tokenizer:
         decode = "".join(self.idx_to_string[idx] for idx in token)
         return decode
 
+class MiniGPTModel(nn.Module):
+    def __init__(self, vocab_size: int, window_size: int, embedding_dim: int):
+        super(MiniGPTModel, self).__init__()
+        self.vocab_size = vocab_size
+        self.window_size = window_size
+        self.embedding_dim = embedding_dim
+        # vector embeddings for contextualization and indexing
+        self.token_embedding = nn.Embedding(vocab_size, embedding_dim) 
+        self.position_embedding = nn.Embedding(window_size, embedding_dim)
+        # linear layer for output
+        self.linear_head = nn.Linear(embedding_dim, vocab_size) # output layer to predict next token
+        
+    def forward(self, x: torch.Tensor):
+        # Perform embeddings
+        token_embedded = self.token_embedding(x)  # Token embeddings
+
+        # x_embedded is of shape (batch_size, window_size, embedding_dim)
+        position_idx = self.position_embedding(torch.arange(self.window_size, device=x.device))  # Position embeddings
+        # Sum of embeddings, go through multi-headed attention,
+        token_embedded += position_idx.unsqueeze(0)  # Add position embeddings to token embeddings
+
+        # Input to transformer: token_embedded, has size (batch_size, window_size, embedding_dim)
+
+        # Transformers, start with self-attention. TO-DO. 
+
+        # Finally output layer to predict next token via linear head 
+
+        # Loss function 
+
+        # Return the logits and the loss results
+
+        pass # Placeholder
+        
 class MiniGPT:
-    def __init__(self, output_path: str):
+    def __init__(self, output_path: str, MiniGPTParams: MiniGPTParams = MiniGPTParams()):
         self.logger = logging.getLogger("Mini-GPT:")
         self.logger.info("Enjoy this small language model, Mini-GPT!")
         self.output_path = output_path
-        self.window_size = 32  # context window size for the model, number of tokens to look back
-        self.batch_size = 16 # batch size for training in parallel
+        self.window_size = MiniGPTParams.window_size # context window size for the model, number of tokens to look back
+        self.batch_size = MiniGPTParams.batch_size # batch size for training in parallel
+        self.embedding_dim = MiniGPTParams.embedding_dim # dimension of the embedding vector
 
     def pipeline(self):
         # read corpus
@@ -109,6 +151,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Mini-GPT: A small language model training pipeline.")
     parser.add_argument("--output_path", type=str, default="corpus.txt", help="Path to the corpus text file.")
     args = parser.parse_args()
-    mini_gpt = MiniGPT(args.output_path)
+    mini_gpt_params = MiniGPTParams()
+    mini_gpt = MiniGPT(args.output_path, MiniGPTParams=mini_gpt_params)
     mini_gpt.pipeline()
     mini_gpt.logger.info("Mini-GPT pipeline completed successfully!")
