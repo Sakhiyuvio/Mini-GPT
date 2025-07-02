@@ -62,6 +62,12 @@ class MiniGPTModel(nn.Module):
         # vector embeddings for contextualization and indexing
         self.token_embedding = nn.Embedding(vocab_size, embedding_dim) 
         self.position_embedding = nn.Embedding(window_size, embedding_dim)
+
+        # q, k, and v
+        self.query = nn.Linear(embedding_dim, embedding_dim)  # Query vector
+        self.key = nn.Linear(embedding_dim, embedding_dim)  # Key vector
+        self.value = nn.Linear(embedding_dim, embedding_dim)  # Value vector
+
         # linear layer for output
         self.linear_head = nn.Linear(embedding_dim, vocab_size) # output layer to predict next token
         
@@ -77,6 +83,17 @@ class MiniGPTModel(nn.Module):
         # Input to transformer: token_embedded, has size (batch_size, window_size, embedding_dim)
 
         # Transformers, start with self-attention. TO-DO. 
+        q = self.query(token_embedded)  # Query vector (batch_size, window_size, embedding_dim)
+        k = self.key(token_embedded)  # Key vector (batch_size, window_size, embedding_dim)
+        weight = q @ k.transpose(-2, -1) # Scaled dot-product attention (batch_size, window_size, window_size)
+
+        # Normalize the attention weights
+        causal_tril_matrix = torch.tril(torch.ones(self.window_size, self.window_size))  # Lower triangular matrix for masking
+        weight = weight.masked_fill(causal_tril_matrix == 0, float('-inf'))  # Apply causal mask
+        weight = torch.softmax(weight, dim=-1)  # Softmax to get attention weights, this normalizes each row for self-attention
+
+        v = self.value(token_embedded)  # Value vector (batch_size, window_size, embedding_dim)
+        attention_output = weight @ v  # Attention output (batch_size, window_size, embedding_dim)  
 
         # Finally output layer to predict next token via linear head 
 
