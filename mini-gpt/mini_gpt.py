@@ -63,7 +63,7 @@ class MiniGPTModel(nn.Module):
         self.token_embedding = nn.Embedding(vocab_size, embedding_dim) 
         self.position_embedding = nn.Embedding(window_size, embedding_dim)
 
-        # q, k, and v
+        # q, k, and v, change the shape of output embeddings if needed
         self.query = nn.Linear(embedding_dim, embedding_dim)  # Query vector
         self.key = nn.Linear(embedding_dim, embedding_dim)  # Key vector
         self.value = nn.Linear(embedding_dim, embedding_dim)  # Value vector
@@ -87,32 +87,54 @@ class MiniGPTModel(nn.Module):
         k = self.key(token_embedded)  # Key vector (batch_size, window_size, embedding_dim)
         weight = q @ k.transpose(-2, -1) # Scaled dot-product attention (batch_size, window_size, window_size)
 
-        # Normalize the attention weights
         causal_tril_matrix = torch.tril(torch.ones(self.window_size, self.window_size))  # Lower triangular matrix for masking
-        weight = weight.masked_fill(causal_tril_matrix == 0, float('-inf'))  # Apply causal mask
+        # Normalize the weights
+        normalization_term = 1/torch.sqrt(torch.tensor(self.embedding_dim, dtype=torch.float32))  # Scaling factor for attention
+        normalized_tril_matrix = causal_tril_matrix * normalization_term  # Apply scaling factor to the causal mask
+        weight = weight.masked_fill(normalized_tril_matrix == 0, float('-inf'))  # Apply causal mask
         weight = torch.softmax(weight, dim=-1)  # Softmax to get attention weights, this normalizes each row for self-attention
 
         v = self.value(token_embedded)  # Value vector (batch_size, window_size, embedding_dim)
         attention_output = weight @ v  # Attention output (batch_size, window_size, embedding_dim)  
 
         # Finally output layer to predict next token via linear head 
+        logits = self.linear_head(attention_output)  # Output logits (batch_size, window_size, vocab_size)
+        # Loss function - TO DO
 
-        # Loss function 
+        # Return the logits (and loss later when needed for training)
+        return logits
 
-        # Return the logits and the loss results
-
-        pass # Placeholder
+    def generate(self, input_tokens: torch.Tensor, max_sequence: int = 50):
+        self.eval() # Set the model to evaluation mode
+        output_tokens = input_tokens.clone()  # Start with the input tokens
+        for i in range(max_sequence):
+            # FF pass through the model
+            logits = self.forward(input_tokens)
+            # Get the softmax probabilities for the next token
+            probabilities = torch.softmax(logits[:, -1, :], dim=-1)  # Get probabilities for the last token in the sequence
+            # Sample from the distribution to get the next token
+            next_token = torch.multinomial(probabilities, num_samples=1)  # Sample next token based on probabilities
+            # Append the next token to the input sequence
+            output_tokens = torch.cat((output_tokens, next_token.unsqueeze(1)), dim=1)  # Concatenate the next token to the input sequence
+        
+        return output_tokens  # Return the generated sequence of tokens
         
 class MiniGPT:
-    def __init__(self, output_path: str, MiniGPTParams: MiniGPTParams = MiniGPTParams()):
+    def __init__(self, output_path: str, corpus_filename: str, MiniGPTParams: MiniGPTParams = MiniGPTParams()):
         self.logger = logging.getLogger("Mini-GPT:")
         self.logger.info("Enjoy this small language model, Mini-GPT!")
         self.output_path = output_path
+        self.corpus_filename = corpus_filename
         self.window_size = MiniGPTParams.window_size # context window size for the model, number of tokens to look back
         self.batch_size = MiniGPTParams.batch_size # batch size for training in parallel
         self.embedding_dim = MiniGPTParams.embedding_dim # dimension of the embedding vector
 
     def pipeline(self):
+        # Check if output path exists, if not create it
+        if not os.path.exists(self.output_path):
+            os.makedirs(self.output_path)
+            self.logger.info(f"Output path {self.output_path} created.")
+        
         # read corpus
         corpus = self.read_corpus()
 
@@ -140,13 +162,38 @@ class MiniGPT:
         x_train, y_train = self.create_batch(DataType.TRAIN)
         x_val, y_val = self.create_batch(DataType.TEST)
 
+        # Initialize the model
+        mini_gpt = MiniGPTModel(
+            vocab_size=tokenizer.vocab_size,
+            window_size=self.window_size,
+            embedding_dim=self.embedding_dim
+        )
+        self.logger.info("MiniGPT model initialized.")
+
+        # Use the model to generate text
+        self.logger.info("Generating text with the MiniGPT model...")
+        output_tokens = mini_gpt.generate(input_tokens=x_val, max_sequence=50)  # Generate text from the validation set
+
+        # Decode
+        decoded_output = tokenizer.decoder(output_tokens.tolist()[0])  # Decode the generated tokens back to text
+        self.logger.info(f"Text generated by MiniGPT, here's a sample: {decoded_output[:20]}...")
+
+        # Save to output path
+        generated_output_file_path = os.path.join(self.output_path, "generated_text.txt")
+        
+        with open(generated_output_file_path, "w", encoding="utf-8") as f:
+            f.write(decoded_output)
+        
+        self.logger.info(f"Generated text saved to {generated_output_file_path}")
+        
     def read_corpus(self):
-        self.logger.info(f"Reading corpus from {self.output_path}...")
-        if not os.path.exists(self.output_path):
+        corpus_filepath = os.path.join(self.output_path, self.corpus_filename)
+        self.logger.info(f"Reading corpus from {corpus_filepath}...")
+        if not os.path.exists(corpus_filepath):
             self.logger.info("Corpus file does not exist, building corpus...")
-            dataset = Dataset(self.output_path)
+            dataset = Dataset(corpus_filepath)
             dataset.build_corpus()
-        with open(self.output_path, "r", encoding="utf-8") as f:
+        with open(corpus_filepath, "r", encoding="utf-8") as f:
             # read corpus text
             corpus_text = f.read()
         return corpus_text
