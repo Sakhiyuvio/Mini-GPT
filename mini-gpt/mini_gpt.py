@@ -13,18 +13,6 @@ Making auto-regressive language model from scratch!
 Play around with it! Currently trained with ~ 1.5 MB of data, using sci-fi books for contextualization.
 """
 
-# Work-flow: 
-
-# Get dataset for training and inference
-
-# Tokenizer, simple encoder decoder, via idx enumeration
-
-# Model class f-pass, losses, and back-prop
-
-# training proc
-
-# testing proc 
-
 class DataType(Enum):
     TRAIN = "train"
     TEST = "test"
