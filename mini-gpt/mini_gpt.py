@@ -53,6 +53,37 @@ class Tokenizer:
         decode = "".join(self.idx_to_string[idx] for idx in token)
         return decode
 
+class MultiHeadedAttention(nn.Module):
+    def __init__(self, embedding_dim: int, num_heads: int, window_size: int, masking: bool = False):
+        super(MultiHeadedAttention, self).__init__()
+        self.embedding_dim = embedding_dim
+        self.num_heads = num_heads
+        self.window_size = window_size
+        self.self_attention_dim = embedding_dim // num_heads  # Dimension for each head
+        self.q_k_v = nn.Linear(self.embedding_dim, 3 * self.embedding_dim)
+        self.mha = nn.Linear(self.embedding_dim, self.embedding_dim)
+        self.masking = masking
+
+    def forward(self, x: torch.Tensor):
+        # x is of shape (batch_size, window_size, embedding_dim)
+        q_k_v_proj = self.q_k_v(x)  # Project input to query, key, and value vectors (batch_size, window_size, 3 * embedding_dim)
+        q, k , v = q_k_v_proj.chunk(3, dim=-1)  # Split into query, key, and value vectors (batch_size, window_size, embedding_dim)
+
+        # Need to reshape the vectors to account for multiple heads! 
+        q, k , v = q.view(q.size(0), q.size(1), self.num_heads, self.self_attention_dim), k.view(k.size(0), k.size(1), self.num_heads, self.self_attention_dim), v.view(v.size(0), v.size(1), self.num_heads, self.self_attention_dim)
+        q, k , v = q.permute(0, 2, 1, 3), k.permute(0, 2, 1, 3), v.permute(0, 2, 1, 3)  # Rearrange to (batch_size, num_heads, window_size, self_attention_dim)
+        weight = q @ k.transpose(-2, -1) / (self.self_attention_dim ** 0.5) # Scaled dot-product attention (batch_size, num_heads, window_size, window_size)
+
+        if self.masking:
+            weight_matrix = torch.tril(torch.ones(self.window_size, self.window_size, device=x.device)).unsqueeze(0).unsqueeze(0)  # Causal mask (1, 1, window_size, window_size)
+            weight = weight.masked_fill(weight_matrix == 0, float('-inf'))  # Apply causal mask
+
+        weight = torch.softmax(weight, dim=-1)  # Softmax to get attention weights, (batch_size, num_heads, window_size, window_size)
+        attention_output = weight @ v  # Attention output (batch_size, num_heads, window_size, embedding_dim//heads)
+        attention_output = attention_output.permute(0, 2, 1, 3)  # Rearrange to (batch_size, window_size, num_heads, embedding_dim//heads)
+        attention_output = attention_output.reshape(attention_output.size(0), attention_output.size(1), -1)  # Flatten to (batch_size, window_size, embedding_dim)  
+        return self.mha(attention_output)
+
 class MiniGPTModel(nn.Module):
     def __init__(self, vocab_size: int, window_size: int, embedding_dim: int):
         super(MiniGPTModel, self).__init__()
@@ -75,30 +106,31 @@ class MiniGPTModel(nn.Module):
         # Perform embeddings
         token_embedded = self.token_embedding(x)  # Token embeddings
 
-        # x_embedded is of shape (batch_size, window_size, embedding_dim)
+        # token_embedded is of shape (batch_size, window_size, embedding_dim)
         position_idx = self.position_embedding(torch.arange(self.window_size, device=x.device))  # Position embeddings
         # Sum of embeddings, go through multi-headed attention,
         token_embedded += position_idx.unsqueeze(0)  # Add position embeddings to token embeddings
 
         # Input to transformer: token_embedded, has size (batch_size, window_size, embedding_dim)
 
-        # Transformers, start with self-attention. TO-DO. 
-        q = self.query(token_embedded)  # Query vector (batch_size, window_size, embedding_dim)
-        k = self.key(token_embedded)  # Key vector (batch_size, window_size, embedding_dim)
-        weight = q @ k.transpose(-2, -1) # Scaled dot-product attention (batch_size, window_size, window_size)
+        # Multi-headed self-attention (with masking)
+        masked_mha_output = MultiHeadedAttention(self.embedding_dim, num_heads=4, window_size=self.window_size, masking=True)(token_embedded)
+        # masked_mha_output is of shape (batch_size, window_size, embedding_dim)
 
-        causal_tril_matrix = torch.tril(torch.ones(self.window_size, self.window_size))  # Lower triangular matrix for masking
-        # Normalize the weights
-        normalization_term = 1/torch.sqrt(torch.tensor(self.embedding_dim, dtype=torch.float32))  # Scaling factor for attention
-        normalized_tril_matrix = causal_tril_matrix * normalization_term  # Apply scaling factor to the causal mask
-        weight = weight.masked_fill(normalized_tril_matrix == 0, float('-inf'))  # Apply causal mask
-        weight = torch.softmax(weight, dim=-1)  # Softmax to get attention weights, this normalizes each row for self-attention
+        # TO DO - Add & Norm before/after blocks
 
-        v = self.value(token_embedded)  # Value vector (batch_size, window_size, embedding_dim)
-        attention_output = weight @ v  # Attention output (batch_size, window_size, embedding_dim)  
+        # TO DO - Feed Forward Network (FFN) block
 
+        # TO DO - Integrated Transformer block
+
+        # TO DO - nn.Sequential transformer blocks 
+
+        # TO DO - TRAINING
+
+        # TO DO - INFERENCE 
+        
         # Finally output layer to predict next token via linear head 
-        logits = self.linear_head(attention_output)  # Output logits (batch_size, window_size, vocab_size)
+        logits = self.linear_head(masked_mha_output)  # Output logits (batch_size, window_size, vocab_size)
         # Loss function - TO DO
 
         # Return the logits (and loss later when needed for training)
