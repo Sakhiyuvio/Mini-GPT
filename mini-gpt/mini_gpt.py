@@ -94,11 +94,6 @@ class MiniGPTModel(nn.Module):
         self.token_embedding = nn.Embedding(vocab_size, embedding_dim) 
         self.position_embedding = nn.Embedding(window_size, embedding_dim)
 
-        # q, k, and v, change the shape of output embeddings if needed
-        self.query = nn.Linear(embedding_dim, embedding_dim)  # Query vector
-        self.key = nn.Linear(embedding_dim, embedding_dim)  # Key vector
-        self.value = nn.Linear(embedding_dim, embedding_dim)  # Value vector
-
         # linear layer for output
         self.linear_head = nn.Linear(embedding_dim, vocab_size) # output layer to predict next token
         
@@ -110,8 +105,6 @@ class MiniGPTModel(nn.Module):
         position_idx = self.position_embedding(torch.arange(self.window_size, device=x.device))  # Position embeddings
         # Sum of embeddings, go through multi-headed attention,
         token_embedded += position_idx.unsqueeze(0)  # Add position embeddings to token embeddings
-
-        # Input to transformer: token_embedded, has size (batch_size, window_size, embedding_dim)
 
         # Multi-headed self-attention (with masking)
         masked_mha_output = MultiHeadedAttention(self.embedding_dim, num_heads=4, window_size=self.window_size, masking=True)(token_embedded)
@@ -128,7 +121,7 @@ class MiniGPTModel(nn.Module):
         # TO DO - TRAINING
 
         # TO DO - INFERENCE 
-        
+
         # Finally output layer to predict next token via linear head 
         logits = self.linear_head(masked_mha_output)  # Output logits (batch_size, window_size, vocab_size)
         # Loss function - TO DO
