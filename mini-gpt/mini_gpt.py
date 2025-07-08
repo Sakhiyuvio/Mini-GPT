@@ -40,6 +40,17 @@ class Tokenizer:
     def decoder(self, token: List[int]):
         decode = "".join(self.idx_to_string[idx] for idx in token)
         return decode
+    
+class LayerNormalization(nn.Module):
+    def __init__(self, dim: int, eps = 1e-5):
+        super(LayerNormalization, self).__init__()
+        self.eps = eps
+        self.gamma = nn.Parameter(torch.ones(dim)) # weights
+        self.beta = nn.Parameter(torch.zeros(dim)) # biases
+
+    def forward(self, x: torch.Tensor):
+        x = nn.Functional.layer_norm(x, (x.size(-1),), self.gamma, self.beta, self.eps)  # Apply layer normalization
+        return x  # Return normalized tensor
 
 class MultiHeadedAttention(nn.Module):
     def __init__(self, embedding_dim: int, num_heads: int, window_size: int, masking: bool = False):
