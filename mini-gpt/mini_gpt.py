@@ -25,6 +25,9 @@ class MiniGPTParams:
     window_size: int = 32  # context window size for the model, number of tokens to look back
     batch_size: int = 16  # batch size for training in parallel
     embedding_dim: int = 32  # dimension of the embedding vector
+    hidden_dim: int = 128  # dimension of the hidden layer in feed-forward network
+    num_heads: int = 4 # number of attention heads in multi-headed attention
+    num_layers: int = 4  # number of layers in the transformer model
     
 class Tokenizer:
     def __init__(self, corpus_text: str):
@@ -42,15 +45,30 @@ class Tokenizer:
         return decode
     
 class LayerNormalization(nn.Module):
-    def __init__(self, dim: int, eps = 1e-5):
+    def __init__(self, embedding_dim: int, eps = 1e-5):
         super(LayerNormalization, self).__init__()
         self.eps = eps
-        self.gamma = nn.Parameter(torch.ones(dim)) # weights
-        self.beta = nn.Parameter(torch.zeros(dim)) # biases
+        self.gamma = nn.Parameter(torch.ones(embedding_dim)) # weights
+        self.beta = nn.Parameter(torch.zeros(embedding_dim)) # biases
 
     def forward(self, x: torch.Tensor):
         x = nn.Functional.layer_norm(x, (x.size(-1),), self.gamma, self.beta, self.eps)  # Apply layer normalization
         return x  # Return normalized tensor
+
+class FeedForwardNN(nn.Module):
+    def __init__(self, embedding_dim: int, hidden_dim: int = 128):
+        super(FeedForwardNN, self).__init__()
+        self.embedding_dim = embedding_dim
+        self.hidden_dim = hidden_dim
+        self.linear1 = nn.Linear(self.embedding_dim, self.hidden_dim)
+        self.linear2 = nn.Linear(self.hidden_dim, self.embedding_dim)
+        self.activation = nn.ReLU()
+
+    def forward(self, x: torch.Tensor):
+        x = self.linear1(x)  # Linear transformation to hidden layer (batch_size, window_size, hidden_dim)
+        x = self.activation(x)  # Apply activation function (ReLU)
+        x = self.linear2(x)  # Linear transformation back to embedding dimension (batch_size, window_size, embedding_dim)
+        return x 
 
 class MultiHeadedAttention(nn.Module):
     def __init__(self, embedding_dim: int, num_heads: int, window_size: int, masking: bool = False):
@@ -66,11 +84,11 @@ class MultiHeadedAttention(nn.Module):
     def forward(self, x: torch.Tensor):
         # x is of shape (batch_size, window_size, embedding_dim)
         q_k_v_proj = self.q_k_v(x)  # Project input to query, key, and value vectors (batch_size, window_size, 3 * embedding_dim)
-        q, k , v = q_k_v_proj.chunk(3, dim=-1)  # Split into query, key, and value vectors (batch_size, window_size, embedding_dim)
+        q, k, v = q_k_v_proj.chunk(3, dim=-1)  # Split into query, key, and value vectors (batch_size, window_size, embedding_dim)
 
         # Need to reshape the vectors to account for multiple heads! 
-        q, k , v = q.view(q.size(0), q.size(1), self.num_heads, self.self_attention_dim), k.view(k.size(0), k.size(1), self.num_heads, self.self_attention_dim), v.view(v.size(0), v.size(1), self.num_heads, self.self_attention_dim)
-        q, k , v = q.permute(0, 2, 1, 3), k.permute(0, 2, 1, 3), v.permute(0, 2, 1, 3)  # Rearrange to (batch_size, num_heads, window_size, self_attention_dim)
+        q, k, v = q.view(q.size(0), q.size(1), self.num_heads, self.self_attention_dim), k.view(k.size(0), k.size(1), self.num_heads, self.self_attention_dim), v.view(v.size(0), v.size(1), self.num_heads, self.self_attention_dim)
+        q, k, v = q.permute(0, 2, 1, 3), k.permute(0, 2, 1, 3), v.permute(0, 2, 1, 3)  # Rearrange to (batch_size, num_heads, window_size, self_attention_dim)
         weight = q @ k.transpose(-2, -1) / (self.self_attention_dim ** 0.5) # Scaled dot-product attention (batch_size, num_heads, window_size, window_size)
 
         if self.masking:
@@ -78,51 +96,66 @@ class MultiHeadedAttention(nn.Module):
             weight = weight.masked_fill(weight_matrix == 0, float('-inf'))  # Apply causal mask
 
         weight = torch.softmax(weight, dim=-1)  # Softmax to get attention weights, (batch_size, num_heads, window_size, window_size)
-        attention_output = weight @ v  # Attention output (batch_size, num_heads, window_size, embedding_dim//heads)
-        attention_output = attention_output.permute(0, 2, 1, 3)  # Rearrange to (batch_size, window_size, num_heads, embedding_dim//heads)
-        attention_output = attention_output.reshape(attention_output.size(0), attention_output.size(1), -1)  # Flatten to (batch_size, window_size, embedding_dim)  
-        return self.mha(attention_output)
+        attention_outputs = weight @ v  # Attention output (batch_size, num_heads, window_size, embedding_dim//heads)
+        attention_outputs = attention_outputs.permute(0, 2, 1, 3)  # Rearrange to (batch_size, window_size, num_heads, embedding_dim//heads)
+        attention_outputs = attention_outputs.reshape(attention_outputs.size(0), attention_outputs.size(1), -1)  # Flatten to (batch_size, window_size, embedding_dim)  
+        return self.mha(attention_outputs)
+
+class TransformerBlock(nn.Module):
+    def __init__(self, cfg: MiniGPTParams = MiniGPTParams()):
+        super(TransformerBlock, self).__init__()
+        self.embedding_dim = cfg.embedding_dim
+        self.hidden_dim = cfg.hidden_dim
+        self.num_heads = cfg.num_heads
+        self.window_size = cfg.window_size
+        self.mha = MultiHeadedAttention(self.embedding_dim, self.num_heads, self.window_size, masking=False)
+        self.masked_mha = MultiHeadedAttention(self.embedding_dim, self.num_heads, self.window_size, masking=True)
+        self.ffn = FeedForwardNN(self.embedding_dim, self.hidden_dim)
+        self.ln = LayerNormalization(self.embedding_dim)
+
+    def forward(self, x: torch.Tensor):
+        # x is of shape (batch_size, window_size, embedding_dim)
+        # Apply residual connections and layer normalization per sub-layers!
+        x = self.masked_mha(x + self.ln(x))
+        x = self.mha(x + self.ln(x))  # Multi-head attention
+        x = self.ffn(x + self.ln(x))  # Feed-forward network
+        return x
 
 class MiniGPTModel(nn.Module):
-    def __init__(self, vocab_size: int, window_size: int, embedding_dim: int):
+    def __init__(self, vocab_size: int, cfg: MiniGPTParams  = MiniGPTParams()):
         super(MiniGPTModel, self).__init__()
         self.vocab_size = vocab_size
-        self.window_size = window_size
-        self.embedding_dim = embedding_dim
+        self.window_size = cfg.window_size
+        self.embedding_dim = cfg.embedding_dim
+        self.num_layers = cfg.num_layers
         # vector embeddings for contextualization and indexing
-        self.token_embedding = nn.Embedding(vocab_size, embedding_dim) 
-        self.position_embedding = nn.Embedding(window_size, embedding_dim)
-
+        self.token_embedding = nn.Embedding(vocab_size, self.embedding_dim) 
+        self.position_embedding = nn.Embedding(self.window_size, self.embedding_dim)
+        self.transformer_block = TransformerBlock(cfg)  # Transformer block for processing sequences
         # linear layer for output
-        self.linear_head = nn.Linear(embedding_dim, vocab_size) # output layer to predict next token
+        self.linear_head = nn.Linear(self.embedding_dim, vocab_size) # output layer to predict next token
         
-    def forward(self, x: torch.Tensor):
+    def forward(self, input_token: torch.Tensor):
         # Perform embeddings
-        token_embedded = self.token_embedding(x)  # Token embeddings
+        output_vect = self.token_embedding(input_token)  # Token embeddings
 
         # token_embedded is of shape (batch_size, window_size, embedding_dim)
-        position_idx = self.position_embedding(torch.arange(self.window_size, device=x.device))  # Position embeddings
+        position_idx = self.position_embedding(torch.arange(self.window_size, device=input_token.device))  # Position embeddings
         # Sum of embeddings, go through multi-headed attention,
-        token_embedded += position_idx.unsqueeze(0)  # Add position embeddings to token embeddings
+        output_vect += position_idx.unsqueeze(0)  # Add position embeddings to token embeddings
 
-        # Multi-headed self-attention (with masking)
-        masked_mha_output = MultiHeadedAttention(self.embedding_dim, num_heads=4, window_size=self.window_size, masking=True)(token_embedded)
-        # masked_mha_output is of shape (batch_size, window_size, embedding_dim)
+        # Sequentially pass through transformer blocks 
+        for t_block in range(self.num_layers):
+            output_vect = self.transformer_block(output_vect)  # Pass through transformer block
 
-        # TO DO - Add & Norm before/after blocks
-
-        # TO DO - Feed Forward Network (FFN) block
-
-        # TO DO - Integrated Transformer block
-
-        # TO DO - nn.Sequential transformer blocks 
+        # TO DO - ADD DROPOUTS
 
         # TO DO - TRAINING
 
         # TO DO - INFERENCE 
 
         # Finally output layer to predict next token via linear head 
-        logits = self.linear_head(masked_mha_output)  # Output logits (batch_size, window_size, vocab_size)
+        logits = self.linear_head(output_vect)  # Output logits (batch_size, window_size, vocab_size)
         # Loss function - TO DO
 
         # Return the logits (and loss later when needed for training)
@@ -144,14 +177,14 @@ class MiniGPTModel(nn.Module):
         return output_tokens  # Return the generated sequence of tokens
         
 class MiniGPT:
-    def __init__(self, output_path: str, corpus_filename: str, MiniGPTParams: MiniGPTParams = MiniGPTParams()):
+    def __init__(self, output_path: str, corpus_filename: str, cfg: MiniGPTParams = MiniGPTParams()):
         self.logger = logging.getLogger("Mini-GPT:")
         self.logger.info("Enjoy this small language model, Mini-GPT!")
         self.output_path = output_path
         self.corpus_filename = corpus_filename
-        self.window_size = MiniGPTParams.window_size # context window size for the model, number of tokens to look back
-        self.batch_size = MiniGPTParams.batch_size # batch size for training in parallel
-        self.embedding_dim = MiniGPTParams.embedding_dim # dimension of the embedding vector
+        self.window_size = cfg.window_size # context window size for the model, number of tokens to look back
+        self.batch_size = cfg.batch_size # batch size for training in parallel
+        self.embedding_dim = cfg.embedding_dim # dimension of the embedding vector
 
     def pipeline(self):
         # Check if output path exists, if not create it
@@ -189,8 +222,7 @@ class MiniGPT:
         # Initialize the model
         mini_gpt = MiniGPTModel(
             vocab_size=tokenizer.vocab_size,
-            window_size=self.window_size,
-            embedding_dim=self.embedding_dim
+            MiniGPTParams=MiniGPTParams
         )
         self.logger.info("MiniGPT model initialized.")
 
