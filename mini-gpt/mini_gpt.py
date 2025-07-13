@@ -7,7 +7,7 @@ from corpus_builder import Dataset
 from dataclasses import dataclass
 from enum import Enum
 from torch import nn
-from typing import List
+from typing import List, Optional
 """
 Making auto-regressive language model from scratch! 
 Play around with it! Currently trained with ~ 1.5 MB of data, using sci-fi books for contextualization.
@@ -60,11 +60,13 @@ class FeedForwardNN(nn.Module):
         super(FeedForwardNN, self).__init__()
         self.embedding_dim = embedding_dim
         self.hidden_dim = hidden_dim
+        self.dropout = nn.Dropout(0.1)  # Dropout layer for regularization
         self.linear1 = nn.Linear(self.embedding_dim, self.hidden_dim)
         self.linear2 = nn.Linear(self.hidden_dim, self.embedding_dim)
         self.activation = nn.ReLU()
 
     def forward(self, x: torch.Tensor):
+        x = self.dropout(x)  # Apply dropout to the input tensor
         x = self.linear1(x)  # Linear transformation to hidden layer (batch_size, window_size, hidden_dim)
         x = self.activation(x)  # Apply activation function (ReLU)
         x = self.linear2(x)  # Linear transformation back to embedding dimension (batch_size, window_size, embedding_dim)
@@ -77,12 +79,14 @@ class MultiHeadedAttention(nn.Module):
         self.num_heads = num_heads
         self.window_size = window_size
         self.self_attention_dim = embedding_dim // num_heads  # Dimension for each head
+        self.dropout = nn.Dropout(0.1)  # Dropout layer for regularization
         self.q_k_v = nn.Linear(self.embedding_dim, 3 * self.embedding_dim)
         self.mha = nn.Linear(self.embedding_dim, self.embedding_dim)
         self.masking = masking
 
     def forward(self, x: torch.Tensor):
         # x is of shape (batch_size, window_size, embedding_dim)
+        x = self.dropout(x)  # Apply dropout to the input tensor
         q_k_v_proj = self.q_k_v(x)  # Project input to query, key, and value vectors (batch_size, window_size, 3 * embedding_dim)
         q, k, v = q_k_v_proj.chunk(3, dim=-1)  # Split into query, key, and value vectors (batch_size, window_size, embedding_dim)
 
@@ -135,11 +139,10 @@ class MiniGPTModel(nn.Module):
         # linear layer for output
         self.linear_head = nn.Linear(self.embedding_dim, vocab_size) # output layer to predict next token
         
-    def forward(self, input_token: torch.Tensor):
+    def forward(self, input_token: torch.Tensor, inference: bool = False, targets: Optional[torch.Tensor] = None):
+        # input token is of shape, (batch_size, window_size)
         # Perform embeddings
-        output_vect = self.token_embedding(input_token)  # Token embeddings
-
-        # token_embedded is of shape (batch_size, window_size, embedding_dim)
+        output_vect = self.token_embedding(input_token) # Token embeddings (batch_size, window_size, embedding_dim)
         position_idx = self.position_embedding(torch.arange(self.window_size, device=input_token.device))  # Position embeddings
         # Sum of embeddings, go through multi-headed attention,
         output_vect += position_idx.unsqueeze(0)  # Add position embeddings to token embeddings
@@ -148,29 +151,34 @@ class MiniGPTModel(nn.Module):
         for t_block in range(self.num_layers):
             output_vect = self.transformer_block(output_vect)  # Pass through transformer block
 
-        # TO DO - ADD DROPOUTS
-
-        # TO DO - TRAINING
-
-        # TO DO - INFERENCE 
-
         # Finally output layer to predict next token via linear head 
-        logits = self.linear_head(output_vect)  # Output logits (batch_size, window_size, vocab_size)
-        # Loss function - TO DO
+        transformer_output = self.linear_head(output_vect)  # Output logits (batch_size, window_size, vocab_size)
 
-        # Return the logits (and loss later when needed for training)
-        return logits
+        # Apply softmax for probabilities and predictions that spans over that window size
+        logits = torch.softmax(transformer_output, dim=-1)  # Convert logits to probabilities (batch_size, window_size, vocab_size)
+        loss = None  # Initialize loss variable, in case of inference
+
+        if not inference:
+            if targets is None:
+                raise ValueError("Targets must be provided for training.")
+            logits = logits[:, :-1, :] # Remove the last token from logits (batch_size, window_size - 1, vocab_size)
+            logits = logits.reshape(-1, self.vocab_size)  # Reshape to (batch_size * window_size - 1, vocab_size) for easier processing
+            # Calculate loss if targets are provided
+            targets = targets.reshape(-1) # shape (batch_size * window_size - 1)
+            loss = nn.CrossEntropyLoss()(logits, targets)  # Cross-entropy loss for classification task
+            logits.reshape(-1, self.window_size - 1, self.vocab_size) # Reshape logits back to (batch_size, window_size - 1, vocab_size)
+
+        # Return the logits (and loss for training)
+        return logits, loss 
 
     def generate(self, input_tokens: torch.Tensor, max_sequence: int = 50):
         self.eval() # Set the model to evaluation mode
         output_tokens = input_tokens.clone()  # Start with the input tokens
         for i in range(max_sequence):
             # FF pass through the model
-            logits = self.forward(input_tokens)
-            # Get the softmax probabilities for the next token
-            probabilities = torch.softmax(logits[:, -1, :], dim=-1)  # Get probabilities for the last token in the sequence
+            logits, _ = self.forward(input_tokens, inference=True)  # Get logits for the input tokens
             # Sample from the distribution to get the next token
-            next_token = torch.multinomial(probabilities, num_samples=1)  # Sample next token based on probabilities
+            next_token = torch.multinomial(logits[:, -1, :], num_samples=1)  # Sample next token based on probabilities
             # Append the next token to the input sequence
             output_tokens = torch.cat((output_tokens, next_token.unsqueeze(1)), dim=1)  # Concatenate the next token to the input sequence
         
