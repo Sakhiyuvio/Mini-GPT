@@ -7,6 +7,7 @@ from corpus_builder import Dataset
 from dataclasses import dataclass
 from enum import Enum
 from torch import nn
+from torch.optim import AdamW
 from typing import List, Optional
 """
 Making auto-regressive language model from scratch! 
@@ -28,6 +29,8 @@ class MiniGPTParams:
     hidden_dim: int = 128  # dimension of the hidden layer in feed-forward network
     num_heads: int = 4 # number of attention heads in multi-headed attention
     num_layers: int = 4  # number of layers in the transformer model
+    learning_rate: float = 3e-2  # learning rate for the optimizer
+    num_epochs: int = 10  # number of epochs to train the model
     
 class Tokenizer:
     def __init__(self, corpus_text: str):
@@ -139,7 +142,7 @@ class MiniGPTModel(nn.Module):
         # linear layer for output
         self.linear_head = nn.Linear(self.embedding_dim, vocab_size) # output layer to predict next token
         
-    def forward(self, input_token: torch.Tensor, inference: bool = False, targets: Optional[torch.Tensor] = None):
+    def forward(self, input_token: torch.Tensor, targets: Optional[torch.Tensor] = None, inference: bool = False):
         # input token is of shape, (batch_size, window_size)
         # Perform embeddings
         output_vect = self.token_embedding(input_token) # Token embeddings (batch_size, window_size, embedding_dim)
@@ -160,16 +163,25 @@ class MiniGPTModel(nn.Module):
 
         if not inference:
             if targets is None:
-                raise ValueError("Targets must be provided for training.")
-            logits = logits[:, :-1, :] # Remove the last token from logits (batch_size, window_size - 1, vocab_size)
-            logits = logits.reshape(-1, self.vocab_size)  # Reshape to (batch_size * window_size - 1, vocab_size) for easier processing
+                raise ValueError("Targets must be provided for training or validation purposes.")
+            logits = logits.reshape(-1, self.vocab_size)  # Reshape to (batch_size * window_size, vocab_size) for easier processing
             # Calculate loss if targets are provided
-            targets = targets.reshape(-1) # shape (batch_size * window_size - 1)
+            targets = targets.reshape(-1) # shape (batch_size * window_size)
             loss = nn.CrossEntropyLoss()(logits, targets)  # Cross-entropy loss for classification task
-            logits.reshape(-1, self.window_size - 1, self.vocab_size) # Reshape logits back to (batch_size, window_size - 1, vocab_size)
+            logits.reshape(-1, self.window_size, self.vocab_size) # Reshape logits back to (batch_size, window_size, vocab_size)
 
         # Return the logits (and loss for training)
         return logits, loss 
+
+    def train(self, input_tokens: torch.Tensor, targets: torch.Tensor, learning_rate: float = 3e-2):
+        # training process of one single batch 
+        self.train()  # Set the model to training mode
+        optimizer = torch.optim.Adam(self.parameters(), lr=learning_rate)  # Adam optimizer for training
+        optimizer.zero_grad()  # Zero the gradients
+        _, loss = self.forward(input_tokens, targets) # Forward pass through the model
+        loss.backward()  # Backward pass to compute gradients
+        optimizer.step()  # Update model parameters
+        return loss.item()  # Return the loss value for monitoring
 
     def generate(self, input_tokens: torch.Tensor, max_sequence: int = 50):
         self.eval() # Set the model to evaluation mode
@@ -193,6 +205,8 @@ class MiniGPT:
         self.window_size = cfg.window_size # context window size for the model, number of tokens to look back
         self.batch_size = cfg.batch_size # batch size for training in parallel
         self.embedding_dim = cfg.embedding_dim # dimension of the embedding vector
+        self.lr = cfg.learning_rate # learning rate for the optimizer
+        self.epochs = cfg.epochs # number of epochs for training
 
     def pipeline(self):
         # Check if output path exists, if not create it
@@ -222,11 +236,6 @@ class MiniGPT:
         self.train_corpus_data = corpus_encoded[:train_size]
         self.test_corpus_data = corpus_encoded[train_size:]
 
-        # create batches for training
-        self.logger.info("Creating batches for training...")
-        x_train, y_train = self.create_batch(DataType.TRAIN)
-        x_val, y_val = self.create_batch(DataType.TEST)
-
         # Initialize the model
         mini_gpt = MiniGPTModel(
             vocab_size=tokenizer.vocab_size,
@@ -234,6 +243,29 @@ class MiniGPT:
         )
         self.logger.info("MiniGPT model initialized.")
 
+        # Train the model
+        self.logger.info("Starting training of the MiniGPT model...")
+        for epoch in self.epochs:
+            for batch in range(len(self.train_corpus_data) / self.batch_size):
+                # create batches for training
+                self.logger.info("Creating batches for training...")
+                x_train, y_train = self.create_batch(DataType.TRAIN)
+                x_val, y_val = self.create_batch(DataType.TEST)
+                loss_val = mini_gpt.train(x_train, y_train, learning_rate = self.lr)  # Train the model for 10 epochs, 16 batches at a time
+                self.logger.info(f"Epoch {epoch}, Batch {batch}: Training loss: {loss_val}")  # Log the training loss
+        self.logger.info("Training completed!")
+
+        # TO DO - Model Validation 
+        # Validate the model
+        self.logger.info("Validating the MiniGPT model...")
+        mini_gpt.eval()  # Set the model to evaluation mode
+        with torch.no_grad():
+            _, validation_loss = mini_gpt.validate(x_val, y_val)
+        self.logger.info("Validation completed.")
+
+        # TO DO - Resource Management/Usage (e.g., GPU/CPU usage, memory management)
+
+        self.logger.info(f"Validation loss: {validation_loss.item()}")
         # Use the model to generate text
         self.logger.info("Generating text with the MiniGPT model...")
         output_tokens = mini_gpt.generate(input_tokens=x_val, max_sequence=50)  # Generate text from the validation set
@@ -268,7 +300,7 @@ class MiniGPT:
         torch.manual_seed(42) # Hitch-hiker's guide to the galaxy special number 
 
         # randomly pick indices to process data in mini batches, pick # batch size of window chunks
-        random_idx = torch.randint(len(data) - self.window_size, (self.batch_size,))
+        random_idx = torch.randint(len(data) - (self.window_size + 1), (self.batch_size,))
         input_to_nn = torch.stack([data[i:i + self.window_size] for i in random_idx])
         output_from_nn = torch.stack([data[i+1: i + 1 + self.window_size] for i in random_idx])
         self.logger.info(f"Batch created for {data_type} data with shape: {input_to_nn.shape}, {output_from_nn.shape}")
