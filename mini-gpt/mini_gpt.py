@@ -265,6 +265,8 @@ class MiniGPT:
 
         # TO DO - Resource Management/Usage (e.g., GPU/CPU usage, memory management)
 
+        # TO DO - Batch creation: remove repeatability
+
         self.logger.info(f"Validation loss: {validation_loss.item()}")
         # Use the model to generate text
         self.logger.info("Generating text with the MiniGPT model...")
