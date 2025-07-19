@@ -2,6 +2,7 @@ import argparse
 import logging
 import os
 import torch
+import time 
 
 from corpus_builder import Dataset
 from dataclasses import dataclass
@@ -31,7 +32,7 @@ class MiniGPTParams:
     num_heads: int = 4 # number of attention heads in multi-headed attention
     num_layers: int = 4  # number of layers in the transformer model
     learning_rate: float = 3e-2  # learning rate for the optimizer
-    num_epochs: int = 10  # number of epochs to train the model
+    num_epochs: int = 1 #10  # number of epochs to train the model
     mode: DataType = DataType.TRAIN  # mode of operation, train or test
     
 class Tokenizer:
@@ -258,6 +259,7 @@ class MiniGPT:
         # Train the model
         if self.mode.value == "train" or self.mode.value == "test":
             self.logger.info("Starting training and evaluation of the MiniGPT model...")
+            start_time = time.time()
             for epoch in range(self.epochs):
                 for batch in range(len(self.train_corpus_data) // self.batch_size):
                     # create batches for training
@@ -267,6 +269,8 @@ class MiniGPT:
                     loss_train = mini_gpt.train(x_train, y_train, learning_rate = self.lr)  # Train the model for 10 epochs, 16 batches at a time
                     loss_val = mini_gpt.validate(x_val, y_val)  # Validate the model
                     self.logger.info(f"Epoch {epoch+1}, Batch {batch + 1}, Training loss: {loss_train}, Validation loss {loss_val}")  # Log the training loss
+            end_time = time.time()
+            self.logger.info(f"Training completed in {end_time - start_time:.2f} seconds.")
             self.logger.info("Training & Eval completed!")
 
         # TO DO - Resource Management/Usage (e.g., GPU/CPU usage, memory management)
@@ -317,8 +321,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Mini-GPT: A small language model training pipeline.")
     parser.add_argument("--output_path", type=str, default="output", help="Path to save the output files.")
     parser.add_argument("--corpus_path", type=str, default="corpus.txt", help="Path to the corpus text file.")
+    parser.add_argument("inference", action = "store_true", help="Run in inference mode to generate text from the trained model.")
     args = parser.parse_args()
-    mini_gpt_params = MiniGPTParams()
+    mini_gpt_params = MiniGPTParams() if not args.inference else MiniGPTParams(mode = DataType.INFERENCE)
     mini_gpt = MiniGPT(args.output_path, args.corpus_path, cfg=mini_gpt_params)
     mini_gpt.pipeline()
     mini_gpt.logger.info("Mini-GPT pipeline completed successfully!")
