@@ -253,14 +253,17 @@ class MiniGPT:
         self.train_corpus_data = corpus_encoded[:train_size]
         self.test_corpus_data = corpus_encoded[train_size:]
 
-        return # checkpoint: corpus init and tokenization before modelling 
-
         # Initialize the model
         mini_gpt = MiniGPTModel(
             vocab_size=tokenizer.vocab_size,
             cfg=MiniGPTParams(),
         )
         self.logger.info("MiniGPT model initialized.")
+
+        total_params = sum(p.numel() for p in mini_gpt.parameters())
+        print(f"Total parameters: {total_params:,}")
+
+        return # check param numbers
 
         # Train the model
         if self.mode.value == "train" or self.mode.value == "test":
@@ -274,7 +277,7 @@ class MiniGPT:
                     x_val, y_val = self.create_batch(DataType.TEST)
                     loss_train = mini_gpt.train(x_train, y_train, learning_rate = self.lr)  # Train the model for 10 epochs, 16 batches at a time
                     loss_val = mini_gpt.validate(x_val, y_val)  # Validate the model
-                    self.logger.info(f"Epoch {epoch+1}, Batch {batch + 1}, Training loss: {loss_train}, Validation loss {loss_val}")  # Log the training loss
+                    self.logger.info(f"Epoch {epoch + 1}, Batch {batch + 1}, Training loss: {loss_train}, Validation loss {loss_val}")  # Log the training loss
             end_time = time.time()
             self.logger.info(f"Training completed in {end_time - start_time:.2f} seconds.")
             self.logger.info("Training & Eval completed!")
