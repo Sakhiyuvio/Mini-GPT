@@ -17,6 +17,7 @@ Play around with it! Currently trained with ~ 1.5 MB of data, using sci-fi books
 class DataType(Enum):
     TRAIN = "train"
     TEST = "test"
+    INFERENCE = "inference"
 
     def __str__(self):
         return self.value
@@ -31,6 +32,7 @@ class MiniGPTParams:
     num_layers: int = 4  # number of layers in the transformer model
     learning_rate: float = 3e-2  # learning rate for the optimizer
     num_epochs: int = 10  # number of epochs to train the model
+    mode: DataType = DataType.TRAIN  # mode of operation, train or test
     
 class Tokenizer:
     def __init__(self, corpus_text: str):
@@ -118,14 +120,16 @@ class TransformerBlock(nn.Module):
         self.mha = MultiHeadedAttention(self.embedding_dim, self.num_heads, self.window_size, masking=False)
         self.masked_mha = MultiHeadedAttention(self.embedding_dim, self.num_heads, self.window_size, masking=True)
         self.ffn = FeedForwardNN(self.embedding_dim, self.hidden_dim)
-        self.ln = LayerNormalization(self.embedding_dim)
+        self.ln_1 = LayerNormalization(self.embedding_dim)
+        self.ln_2 = LayerNormalization(self.embedding_dim)
+        self.ln_3 = LayerNormalization(self.embedding_dim)
 
     def forward(self, x: torch.Tensor):
         # x is of shape (batch_size, window_size, embedding_dim)
         # Apply residual connections and layer normalization per sub-layers!
-        x = self.masked_mha(x + self.ln(x))
-        x = self.mha(x + self.ln(x))  # Multi-head attention
-        x = self.ffn(x + self.ln(x))  # Feed-forward network
+        x = self.masked_mha(x + self.ln_1(x))
+        x = self.mha(x + self.ln_2(x))  # Multi-head attention
+        x = self.ffn(x + self.ln_3(x))  # Feed-forward network
         return x
 
 class MiniGPTModel(nn.Module):
@@ -138,7 +142,7 @@ class MiniGPTModel(nn.Module):
         # vector embeddings for contextualization and indexing
         self.token_embedding = nn.Embedding(vocab_size, self.embedding_dim) 
         self.position_embedding = nn.Embedding(self.window_size, self.embedding_dim)
-        self.transformer_block = TransformerBlock(cfg)  # Transformer block for processing sequences
+        self.transformer_blocks = nn.ModuleList([TransformerBlock(cfg) for _ in range(cfg.num_layers)])
         # linear layer for output
         self.linear_head = nn.Linear(self.embedding_dim, vocab_size) # output layer to predict next token
         
@@ -151,8 +155,8 @@ class MiniGPTModel(nn.Module):
         output_vect += position_idx.unsqueeze(0)  # Add position embeddings to token embeddings
 
         # Sequentially pass through transformer blocks 
-        for t_block in range(self.num_layers):
-            output_vect = self.transformer_block(output_vect)  # Pass through transformer block
+        for t_block in self.transformer_blocks:
+            output_vect = t_block(output_vect)  # Pass through transformer block
 
         # Finally output layer to predict next token via linear head 
         transformer_output = self.linear_head(output_vect)  # Output logits (batch_size, window_size, vocab_size)
@@ -183,6 +187,13 @@ class MiniGPTModel(nn.Module):
         optimizer.step()  # Update model parameters
         return loss.item()  # Return the loss value for monitoring
 
+    def validate(self, input_tokens: torch.Tensor, targets: torch.Tensor):
+        # validation process of one single batch
+        self.eval() # Set the model to evaluation mode
+        with torch.no_grad():  # Disable gradient computation for validation
+            _, loss = self.forward(input_tokens, targets)  # Forward pass through the model
+        return loss.item()  # Return the loss value for monitoring
+
     def generate(self, input_tokens: torch.Tensor, max_sequence: int = 50):
         self.eval() # Set the model to evaluation mode
         output_tokens = input_tokens.clone()  # Start with the input tokens
@@ -207,6 +218,7 @@ class MiniGPT:
         self.embedding_dim = cfg.embedding_dim # dimension of the embedding vector
         self.lr = cfg.learning_rate # learning rate for the optimizer
         self.epochs = cfg.epochs # number of epochs for training
+        self.mode = cfg.mode # mode of operation, either 'train' or 'inference'
 
     def pipeline(self):
         # Check if output path exists, if not create it
@@ -239,50 +251,42 @@ class MiniGPT:
         # Initialize the model
         mini_gpt = MiniGPTModel(
             vocab_size=tokenizer.vocab_size,
-            MiniGPTParams=MiniGPTParams
+            cfg=MiniGPTParams(),
         )
         self.logger.info("MiniGPT model initialized.")
 
         # Train the model
-        self.logger.info("Starting training of the MiniGPT model...")
-        for epoch in self.epochs:
-            for batch in range(len(self.train_corpus_data) / self.batch_size):
-                # create batches for training
-                self.logger.info("Creating batches for training...")
-                x_train, y_train = self.create_batch(DataType.TRAIN)
-                x_val, y_val = self.create_batch(DataType.TEST)
-                loss_val = mini_gpt.train(x_train, y_train, learning_rate = self.lr)  # Train the model for 10 epochs, 16 batches at a time
-                self.logger.info(f"Epoch {epoch}, Batch {batch}: Training loss: {loss_val}")  # Log the training loss
-        self.logger.info("Training completed!")
-
-        # TO DO - Model Validation 
-        # Validate the model
-        self.logger.info("Validating the MiniGPT model...")
-        mini_gpt.eval()  # Set the model to evaluation mode
-        with torch.no_grad():
-            _, validation_loss = mini_gpt.validate(x_val, y_val)
-        self.logger.info("Validation completed.")
+        if self.mode.value == "train" or self.mode.value == "test":
+            self.logger.info("Starting training and evaluation of the MiniGPT model...")
+            for epoch in range(self.epochs):
+                for batch in range(len(self.train_corpus_data) // self.batch_size):
+                    # create batches for training
+                    self.logger.info("Creating batches for training...")
+                    x_train, y_train = self.create_batch(DataType.TRAIN)
+                    x_val, y_val = self.create_batch(DataType.TEST)
+                    loss_train = mini_gpt.train(x_train, y_train, learning_rate = self.lr)  # Train the model for 10 epochs, 16 batches at a time
+                    loss_val = mini_gpt.validate(x_val, y_val)  # Validate the model
+                    self.logger.info(f"Epoch {epoch+1}, Batch {batch + 1}, Training loss: {loss_train}, Validation loss {loss_val}")  # Log the training loss
+            self.logger.info("Training & Eval completed!")
 
         # TO DO - Resource Management/Usage (e.g., GPU/CPU usage, memory management)
 
-        # TO DO - Batch creation: remove repeatability
+        else:
+            # Use the model to generate text - Inference mode 
+            self.logger.info("Generating text with the MiniGPT model...")
+            output_tokens = mini_gpt.generate(input_tokens=x_val, max_sequence=50)  # Generate text from the validation set
 
-        self.logger.info(f"Validation loss: {validation_loss.item()}")
-        # Use the model to generate text
-        self.logger.info("Generating text with the MiniGPT model...")
-        output_tokens = mini_gpt.generate(input_tokens=x_val, max_sequence=50)  # Generate text from the validation set
+            # Decode
+            decoded_output = tokenizer.decoder(output_tokens.tolist()[0])  # Decode the generated tokens back to text
+            self.logger.info(f"Text generated by MiniGPT, here's a sample: {decoded_output[:20]}...")
 
-        # Decode
-        decoded_output = tokenizer.decoder(output_tokens.tolist()[0])  # Decode the generated tokens back to text
-        self.logger.info(f"Text generated by MiniGPT, here's a sample: {decoded_output[:20]}...")
-
-        # Save to output path
-        generated_output_file_path = os.path.join(self.output_path, "generated_text.txt")
-        
-        with open(generated_output_file_path, "w", encoding="utf-8") as f:
-            f.write(decoded_output)
-        
-        self.logger.info(f"Generated text saved to {generated_output_file_path}")
+            # Save to output path
+            generated_output_file_path = os.path.join(self.output_path, "generated_text.txt")
+            
+            with open(generated_output_file_path, "w", encoding="utf-8") as f:
+                f.write(decoded_output)
+            
+            self.logger.info(f"Generated text saved to {generated_output_file_path}")
         
     def read_corpus(self):
         corpus_filepath = os.path.join(self.output_path, self.corpus_filename)
@@ -311,9 +315,10 @@ class MiniGPT:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser(description="Mini-GPT: A small language model training pipeline.")
-    parser.add_argument("--output_path", type=str, default="corpus.txt", help="Path to the corpus text file.")
+    parser.add_argument("--output_path", type=str, default="output", help="Path to save the output files.")
+    parser.add_argument("--corpus_path", type=str, default="corpus.txt", help="Path to the corpus text file.")
     args = parser.parse_args()
     mini_gpt_params = MiniGPTParams()
-    mini_gpt = MiniGPT(args.output_path, MiniGPTParams=mini_gpt_params)
+    mini_gpt = MiniGPT(args.output_path, args.corpus_path, cfg=mini_gpt_params)
     mini_gpt.pipeline()
     mini_gpt.logger.info("Mini-GPT pipeline completed successfully!")
