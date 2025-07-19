@@ -209,23 +209,27 @@ class MiniGPTModel(nn.Module):
         return output_tokens  # Return the generated sequence of tokens
         
 class MiniGPT:
-    def __init__(self, output_path: str, corpus_filename: str, cfg: MiniGPTParams = MiniGPTParams()):
+    def __init__(self, output_path: str, corpus_path: str, cfg: MiniGPTParams = MiniGPTParams()):
         self.logger = logging.getLogger("Mini-GPT:")
         self.logger.info("Enjoy this small language model, Mini-GPT!")
-        self.output_path = output_path
-        self.corpus_filename = corpus_filename
+        self.output_path = os.path.expanduser(output_path)
+        self.corpus_path = os.path.expanduser(corpus_path)
         self.window_size = cfg.window_size # context window size for the model, number of tokens to look back
         self.batch_size = cfg.batch_size # batch size for training in parallel
         self.embedding_dim = cfg.embedding_dim # dimension of the embedding vector
         self.lr = cfg.learning_rate # learning rate for the optimizer
-        self.epochs = cfg.epochs # number of epochs for training
+        self.epochs = cfg.num_epochs # number of epochs for training
         self.mode = cfg.mode # mode of operation, either 'train' or 'inference'
 
     def pipeline(self):
-        # Check if output path exists, if not create it
+        # Check if output path and corpus path exist, if not create them
         if not os.path.exists(self.output_path):
             os.makedirs(self.output_path)
             self.logger.info(f"Output path {self.output_path} created.")
+        
+        if not os.path.exists(self.corpus_path):
+            os.makedirs(self.corpus_path)
+            self.logger.info(f"Corpus path {self.corpus_path} created.")
         
         # read corpus
         corpus = self.read_corpus()
@@ -236,7 +240,7 @@ class MiniGPT:
         self.logger.info(f"Characters: {tokenizer.characters[:]}")  # print all characters
         self.logger.info("Tokenizer initialized.")
 
-        # # encode corpus
+        # encode corpus
         corpus_encoded = torch.tensor(tokenizer.encoder(corpus), dtype=torch.long)
         self.logger.info("Corpus encoded.")
         self.logger.info(f"Encoded corpus length: {len(corpus_encoded)} tokens.")
@@ -248,6 +252,8 @@ class MiniGPT:
         train_size = int(0.9 * all)
         self.train_corpus_data = corpus_encoded[:train_size]
         self.test_corpus_data = corpus_encoded[train_size:]
+
+        return # checkpoint: corpus init and tokenization before modelling 
 
         # Initialize the model
         mini_gpt = MiniGPTModel(
@@ -291,13 +297,12 @@ class MiniGPT:
             self.logger.info(f"Generated text saved to {generated_output_file_path}")
         
     def read_corpus(self):
-        corpus_filepath = os.path.join(self.output_path, self.corpus_filename)
-        self.logger.info(f"Reading corpus from {corpus_filepath}...")
-        if not os.path.exists(corpus_filepath):
+        self.logger.info(f"Reading corpus from {self.corpus_path}...")
+        if not os.path.exists(self.corpus_path):
             self.logger.info("Corpus file does not exist, building corpus...")
-            dataset = Dataset(corpus_filepath)
+            dataset = Dataset(self.corpus_pathh)
             dataset.build_corpus()
-        with open(corpus_filepath, "r", encoding="utf-8") as f:
+        with open(self.corpus_path, "r", encoding="utf-8") as f:
             # read corpus text
             corpus_text = f.read()
         return corpus_text
@@ -319,7 +324,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Mini-GPT: A small language model training pipeline.")
     parser.add_argument("--output_path", type=str, default="output", help="Path to save the output files.")
     parser.add_argument("--corpus_path", type=str, default="corpus.txt", help="Path to the corpus text file.")
-    parser.add_argument("inference", action = "store_true", help="Run in inference mode to generate text from the trained model.")
+    parser.add_argument("--inference", action = "store_true", help="Run in inference mode to generate text from the trained model.")
     args = parser.parse_args()
     mini_gpt_params = MiniGPTParams() if not args.inference else MiniGPTParams(mode = DataType.INFERENCE)
     mini_gpt = MiniGPT(args.output_path, args.corpus_path, cfg=mini_gpt_params)
