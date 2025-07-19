@@ -181,7 +181,7 @@ class MiniGPTModel(nn.Module):
     def train(self, input_tokens: torch.Tensor, targets: torch.Tensor, learning_rate: float = 3e-2):
         # training process of one single batch 
         self.train()  # Set the model to training mode
-        optimizer = torch.optim.Adam(self.parameters(), lr=learning_rate)  # Adam optimizer for training
+        optimizer = AdamW(self.parameters(), lr=learning_rate)  # Adam optimizer for training
         optimizer.zero_grad()  # Zero the gradients
         _, loss = self.forward(input_tokens, targets) # Forward pass through the model
         loss.backward()  # Backward pass to compute gradients
@@ -272,8 +272,6 @@ class MiniGPT:
             end_time = time.time()
             self.logger.info(f"Training completed in {end_time - start_time:.2f} seconds.")
             self.logger.info("Training & Eval completed!")
-
-        # TO DO - Resource Management/Usage (e.g., GPU/CPU usage, memory management)
 
         else:
             # Use the model to generate text - Inference mode 
