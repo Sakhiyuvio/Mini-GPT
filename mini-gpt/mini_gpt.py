@@ -263,8 +263,6 @@ class MiniGPT:
         total_params = sum(p.numel() for p in mini_gpt.parameters())
         print(f"Total parameters: {total_params:,}")
 
-        return # check param numbers
-
         # Train the model
         if self.mode.value == "train" or self.mode.value == "test":
             self.logger.info("Starting training and evaluation of the MiniGPT model...")
