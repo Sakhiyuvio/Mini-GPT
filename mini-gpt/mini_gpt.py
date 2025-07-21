@@ -10,6 +10,7 @@ from enum import Enum
 from torch import nn
 from torch.optim import AdamW
 from typing import List, Optional
+
 """
 Making auto-regressive language model from scratch! 
 Play around with it! Currently trained with ~ 1.5 MB of data, using sci-fi books for contextualization.
@@ -31,9 +32,8 @@ class MiniGPTParams:
     hidden_dim: int = 128  # dimension of the hidden layer in feed-forward network
     num_heads: int = 4 # number of attention heads in multi-headed attention
     num_layers: int = 4  # number of layers in the transformer model
-    learning_rate: float = 3e-2  # learning rate for the optimizer
+    learning_rate: float = 3e-2 # learning rate for the optimizer
     num_epochs: int = 1 #10  # number of epochs to train the model
-    mode: DataType = DataType.TRAIN  # mode of operation, train or test
     
 class Tokenizer:
     def __init__(self, corpus_text: str):
@@ -58,7 +58,7 @@ class LayerNormalization(nn.Module):
         self.beta = nn.Parameter(torch.zeros(embedding_dim)) # biases
 
     def forward(self, x: torch.Tensor):
-        x = nn.Functional.layer_norm(x, (x.size(-1),), self.gamma, self.beta, self.eps)  # Apply layer normalization
+        x = nn.functional.layer_norm(x, (x.size(-1),), self.gamma, self.beta, self.eps)  # Apply layer normalization
         return x  # Return normalized tensor
 
 class FeedForwardNN(nn.Module):
@@ -128,9 +128,9 @@ class TransformerBlock(nn.Module):
     def forward(self, x: torch.Tensor):
         # x is of shape (batch_size, window_size, embedding_dim)
         # Apply residual connections and layer normalization per sub-layers!
-        x = self.masked_mha(x + self.ln_1(x))
-        x = self.mha(x + self.ln_2(x))  # Multi-head attention
-        x = self.ffn(x + self.ln_3(x))  # Feed-forward network
+        x = x + self.masked_mha(self.ln_1(x))
+        x = x + self.mha(self.ln_2(x))  # Multi-head attention
+        x = x + self.ffn(self.ln_3(x))  # Feed-forward network
         return x
 
 class MiniGPTModel(nn.Module):
@@ -146,6 +146,16 @@ class MiniGPTModel(nn.Module):
         self.transformer_blocks = nn.ModuleList([TransformerBlock(cfg) for _ in range(cfg.num_layers)])
         # linear layer for output
         self.linear_head = nn.Linear(self.embedding_dim, vocab_size) # output layer to predict next token
+
+        self.apply(self._init_weights)  # Custom weight initialization for the model
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02) 
         
     def forward(self, input_token: torch.Tensor, targets: Optional[torch.Tensor] = None, inference: bool = False):
         # input token is of shape, (batch_size, window_size)
@@ -163,7 +173,7 @@ class MiniGPTModel(nn.Module):
         transformer_output = self.linear_head(output_vect)  # Output logits (batch_size, window_size, vocab_size)
 
         # Apply softmax for probabilities and predictions that spans over that window size
-        logits = torch.softmax(transformer_output, dim=-1)  # Convert logits to probabilities (batch_size, window_size, vocab_size)
+        logits = transformer_output # softmax implicitly calculated by cross-entropy loss
         loss = None  # Initialize loss variable, in case of inference
 
         if not inference:
@@ -178,10 +188,9 @@ class MiniGPTModel(nn.Module):
         # Return the logits (and loss for training)
         return logits, loss 
 
-    def train(self, input_tokens: torch.Tensor, targets: torch.Tensor, learning_rate: float = 3e-2):
+    def train_step(self, input_tokens: torch.Tensor, targets: torch.Tensor, optimizer, learning_rate: float = 3e-2):
+        self.train() # Set the model to training mode
         # training process of one single batch 
-        self.train()  # Set the model to training mode
-        optimizer = AdamW(self.parameters(), lr=learning_rate)  # Adam optimizer for training
         optimizer.zero_grad()  # Zero the gradients
         _, loss = self.forward(input_tokens, targets) # Forward pass through the model
         loss.backward()  # Backward pass to compute gradients
@@ -190,7 +199,7 @@ class MiniGPTModel(nn.Module):
 
     def validate(self, input_tokens: torch.Tensor, targets: torch.Tensor):
         # validation process of one single batch
-        self.eval() # Set the model to evaluation mode
+        self.eval()
         with torch.no_grad():  # Disable gradient computation for validation
             _, loss = self.forward(input_tokens, targets)  # Forward pass through the model
         return loss.item()  # Return the loss value for monitoring
@@ -199,12 +208,23 @@ class MiniGPTModel(nn.Module):
         self.eval() # Set the model to evaluation mode
         output_tokens = input_tokens.clone()  # Start with the input tokens
         for i in range(max_sequence):
-            # FF pass through the model
-            logits, _ = self.forward(input_tokens, inference=True)  # Get logits for the input tokens
-            # Sample from the distribution to get the next token
-            next_token = torch.multinomial(logits[:, -1, :], num_samples=1)  # Sample next token based on probabilities
-            # Append the next token to the input sequence
-            output_tokens = torch.cat((output_tokens, next_token.unsqueeze(1)), dim=1)  # Concatenate the next token to the input sequence
+            # Make sure that the current tokens are within the window size for forward pass
+            curr_tokens = output_tokens[:, -self.window_size:] if output_tokens.size(1) >= self.window_size else output_tokens
+
+            if curr_tokens.size(1) < self.window_size:
+                pad = self.window_size - curr_tokens.size(1)
+                input_pad = torch.zeros((curr_tokens.size(0), pad), dtype=torch.long, device=curr_tokens.device)
+                curr_tokens = torch.cat((input_pad, curr_tokens), dim=1)  # Pad the input to the window size
+
+            with torch.no_grad():
+                # FF pass through the model
+                logits, _ = self.forward(curr_tokens, inference=True)  # Get logits for the input tokens
+
+                probs = torch.softmax(logits[:, -1, :], dim=-1)  # Apply softmax to get probabilities for the last token
+                # Sample from the distribution to get the next token
+                next_token = torch.multinomial(probs, num_samples=1)  # Sample next token based on probabilities
+                # Append the next token to the input sequence
+                output_tokens = torch.cat((output_tokens, next_token), dim=1)  # Concatenate the next token to the input sequence
         
         return output_tokens  # Return the generated sequence of tokens
         
@@ -219,7 +239,6 @@ class MiniGPT:
         self.embedding_dim = cfg.embedding_dim # dimension of the embedding vector
         self.lr = cfg.learning_rate # learning rate for the optimizer
         self.epochs = cfg.num_epochs # number of epochs for training
-        self.mode = cfg.mode # mode of operation, either 'train' or 'inference'
 
     def pipeline(self):
         # Check if output path and corpus path exist, if not create them
@@ -261,41 +280,45 @@ class MiniGPT:
         self.logger.info("MiniGPT model initialized.")
 
         total_params = sum(p.numel() for p in mini_gpt.parameters())
-        print(f"Total parameters: {total_params:,}")
+        self.logger.info(f"Total parameters: {total_params:,}")
 
         # Train the model
-        if self.mode.value == "train" or self.mode.value == "test":
-            self.logger.info("Starting training and evaluation of the MiniGPT model...")
-            start_time = time.time()
-            for epoch in range(self.epochs):
-                for batch in range(len(self.train_corpus_data) // self.batch_size):
-                    # create batches for training
-                    self.logger.info("Creating batches for training...")
-                    x_train, y_train = self.create_batch(DataType.TRAIN)
-                    x_val, y_val = self.create_batch(DataType.TEST)
-                    loss_train = mini_gpt.train(x_train, y_train, learning_rate = self.lr)  # Train the model for 10 epochs, 16 batches at a time
-                    loss_val = mini_gpt.validate(x_val, y_val)  # Validate the model
-                    self.logger.info(f"Epoch {epoch + 1}, Batch {batch + 1}, Training loss: {loss_train}, Validation loss {loss_val}")  # Log the training loss
-            end_time = time.time()
-            self.logger.info(f"Training completed in {end_time - start_time:.2f} seconds.")
-            self.logger.info("Training & Eval completed!")
+        self.logger.info("Starting training and evaluation of the MiniGPT model...")
+        start_time = time.time()
+        optimizer = AdamW(mini_gpt.parameters(), lr=self.lr)  # Adam optimizer for training
+        for epoch in range(self.epochs):
+            for batch in range(len(self.train_corpus_data) // self.batch_size):
+                if batch == 600:  # Stop training after 5000 batches
+                    self.logger.info("Training stopped after 5000 batches.")
+                    break
+                # create batches for training
+                self.logger.info("Creating batches for training...")
+                x_train, y_train = self.create_batch(DataType.TRAIN)
+                x_val, y_val = self.create_batch(DataType.TEST)
+                loss_train = mini_gpt.train_step(x_train, y_train, optimizer, learning_rate = self.lr)  # Train the model for 10 epochs, 16 batches at a time
+                loss_val = mini_gpt.validate(x_val, y_val)  # Validate the model
+                self.logger.info(f"Epoch {epoch + 1}, Batch {batch + 1}, Training loss: {loss_train}, Validation loss {loss_val}")  # Log the training loss
+        end_time = time.time()
+        self.logger.info(f"Training completed in {end_time - start_time:.2f} seconds.")
+        self.logger.info("Training & Eval completed!")
 
-        else:
-            # Use the model to generate text - Inference mode 
-            self.logger.info("Generating text with the MiniGPT model...")
-            output_tokens = mini_gpt.generate(input_tokens=x_val, max_sequence=50)  # Generate text from the validation set
+        # Use the model to generate text - Inference mode 
+        self.logger.info("Generating text with the MiniGPT model...")
+        start_sequence = "\n"
+        input_tokens = torch.tensor(tokenizer.encoder(start_sequence), dtype=torch.long).unsqueeze(0)  # Encode the start sequence
+        output_tokens = mini_gpt.generate(input_tokens=input_tokens, max_sequence=500)  # Generate text from the validation set
 
-            # Decode
-            decoded_output = tokenizer.decoder(output_tokens.tolist()[0])  # Decode the generated tokens back to text
-            self.logger.info(f"Text generated by MiniGPT, here's a sample: {decoded_output[:20]}...")
+        # Decode
+        decoded_output = tokenizer.decoder(output_tokens.tolist()[0])  # Decode the generated tokens back to text
+        self.logger.info(f"Text generated by MiniGPT, here's a sample: {decoded_output[:20]}...")
 
-            # Save to output path
-            generated_output_file_path = os.path.join(self.output_path, "generated_text.txt")
-            
-            with open(generated_output_file_path, "w", encoding="utf-8") as f:
-                f.write(decoded_output)
-            
-            self.logger.info(f"Generated text saved to {generated_output_file_path}")
+        # Save to output path
+        generated_output_file_path = os.path.join(self.output_path, "generated_text.txt")
+        
+        with open(generated_output_file_path, "w", encoding="utf-8") as f:
+            f.write(decoded_output)
+        
+        self.logger.info(f"Generated text saved to {generated_output_file_path}")
         
     def read_corpus(self):
         self.logger.info(f"Reading corpus from {self.corpus_path}...")
@@ -311,7 +334,7 @@ class MiniGPT:
     def create_batch(self, data_type: DataType):
         data = self.train_corpus_data if data_type == DataType.TRAIN else self.test_corpus_data
 
-        torch.manual_seed(42) # Hitch-hiker's guide to the galaxy special number 
+        # torch.manual_seed(42) # Hitch-hiker's guide to the galaxy special number 
 
         # randomly pick indices to process data in mini batches, pick # batch size of window chunks
         random_idx = torch.randint(len(data) - (self.window_size + 1), (self.batch_size,))
@@ -325,9 +348,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Mini-GPT: A small language model training pipeline.")
     parser.add_argument("--output_path", type=str, default="output", help="Path to save the output files.")
     parser.add_argument("--corpus_path", type=str, default="corpus.txt", help="Path to the corpus text file.")
-    parser.add_argument("--inference", action = "store_true", help="Run in inference mode to generate text from the trained model.")
     args = parser.parse_args()
-    mini_gpt_params = MiniGPTParams() if not args.inference else MiniGPTParams(mode = DataType.INFERENCE)
+    mini_gpt_params = MiniGPTParams()
     mini_gpt = MiniGPT(args.output_path, args.corpus_path, cfg=mini_gpt_params)
     mini_gpt.pipeline()
     mini_gpt.logger.info("Mini-GPT pipeline completed successfully!")
