@@ -288,8 +288,8 @@ class MiniGPT:
         optimizer = AdamW(mini_gpt.parameters(), lr=self.lr)  # Adam optimizer for training
         for epoch in range(self.epochs):
             for batch in range(len(self.train_corpus_data) // self.batch_size):
-                if batch == 600:  # Stop training after 5000 batches
-                    self.logger.info("Training stopped after 5000 batches.")
+                if batch == 1000:  # Stop training after 1000 batches for demonstration purposes
+                    self.logger.info("Training stopped after 1000 batches.")
                     break
                 # create batches for training
                 self.logger.info("Creating batches for training...")
