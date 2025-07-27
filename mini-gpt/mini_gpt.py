@@ -296,9 +296,9 @@ class MiniGPT:
             log_interval = 100 
             for epoch in range(self.epochs):
                 for batch in range(len(self.train_corpus_data) // self.batch_size):
-                    if batch == 1000:  # Stop training after 1000 batches for demonstration purposes
-                        self.logger.info("Training stopped after 1000 batches.")
-                        break
+                    # if batch == 1000:  # Stop training after 1000 batches for demonstration purposes
+                    #     self.logger.info("Training stopped after 1000 batches.")
+                    #     break
                     # create batches for training
                     x_train, y_train = self.create_batch(DataType.TRAIN)
                     loss_train = mini_gpt.train_step(x_train, y_train, optimizer, learning_rate = self.lr)  # Train the model for 10 epochs, 16 batches at a time
