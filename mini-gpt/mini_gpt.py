@@ -94,6 +94,7 @@ class MultiHeadedAttention(nn.Module):
 
     def forward(self, x: torch.Tensor):
         # x is of shape (batch_size, window_size, embedding_dim)
+        _, T, _ = x.size()
         x = self.dropout(x)  # Apply dropout to the input tensor
         q_k_v_proj = self.q_k_v(x)  # Project input to query, key, and value vectors (batch_size, window_size, 3 * embedding_dim)
         q, k, v = q_k_v_proj.chunk(3, dim=-1)  # Split into query, key, and value vectors (batch_size, window_size, embedding_dim)
@@ -104,7 +105,7 @@ class MultiHeadedAttention(nn.Module):
         weight = q @ k.transpose(-2, -1) / (self.self_attention_dim ** 0.5) # Scaled dot-product attention (batch_size, num_heads, window_size, window_size)
 
         if self.masking:
-            weight_matrix = torch.tril(torch.ones(self.window_size, self.window_size, device=x.device)).unsqueeze(0).unsqueeze(0)  # Causal mask (1, 1, window_size, window_size)
+            weight_matrix = torch.tril(torch.ones(T, T, device=x.device)).unsqueeze(0).unsqueeze(0)  # Causal mask (1, 1, window_size, window_size)
             weight = weight.masked_fill(weight_matrix == 0, float('-inf'))  # Apply causal mask
 
         weight = torch.softmax(weight, dim=-1)  # Softmax to get attention weights, (batch_size, num_heads, window_size, window_size)
@@ -159,8 +160,13 @@ class MiniGPTModel(nn.Module):
     def forward(self, input_token: torch.Tensor, targets: Optional[torch.Tensor] = None, inference: bool = False):
         # input token is of shape, (batch_size, window_size)
         # Perform embeddings
+
+        B, T = input_token.size()
+
+        assert T <= self.window_size, "Cannot forward sequence longer than window size"
+
         output_vect = self.token_embedding(input_token) # Token embeddings (batch_size, window_size, embedding_dim)
-        position_idx = self.position_embedding(torch.arange(self.window_size, device=input_token.device))  # Position embeddings
+        position_idx = self.position_embedding(torch.arange(T, device=input_token.device))  # Position embeddings
         # Sum of embeddings, go through multi-headed attention,
         output_vect += position_idx.unsqueeze(0)  # Add position embeddings to token embeddings
 
@@ -208,7 +214,7 @@ class MiniGPTModel(nn.Module):
         output_tokens = input_tokens.clone()  # Start with the input tokens
         for i in range(max_sequence):
             # Make sure that the current tokens are within the window size for forward pass
-            curr_tokens = output_tokens[:, -self.window_size:]
+            curr_tokens = output_tokens[:, -self.window_size:] if output_tokens.size(1) > self.window_size else output_tokens
 
             with torch.no_grad():
                 # FF pass through the model
@@ -290,9 +296,9 @@ class MiniGPT:
             log_interval = 100 
             for epoch in range(self.epochs):
                 for batch in range(len(self.train_corpus_data) // self.batch_size):
-                    # if batch == 1000:  # Stop training after 1000 batches for demonstration purposes
-                    #     self.logger.info("Training stopped after 1000 batches.")
-                    #     break
+                    if batch == 1000:  # Stop training after 1000 batches for demonstration purposes
+                        self.logger.info("Training stopped after 1000 batches.")
+                        break
                     # create batches for training
                     x_train, y_train = self.create_batch(DataType.TRAIN)
                     loss_train = mini_gpt.train_step(x_train, y_train, optimizer, learning_rate = self.lr)  # Train the model for 10 epochs, 16 batches at a time
@@ -315,7 +321,7 @@ class MiniGPT:
             model_save_path = os.path.join(self.weights_path, "mini_gpt_weights.pth")
             self.logger.info(f"Saving model weights to {model_save_path}...")
             torch.save(mini_gpt.state_dict(), model_save_path)
-            
+
         # Use the model to generate text - Inference mode 
         self.logger.info("Generating text with the MiniGPT model...")
         start_sequence = "\n"
@@ -354,7 +360,6 @@ class MiniGPT:
         random_idx = torch.randint(len(data) - (self.window_size + 1), (self.batch_size,))
         input_to_nn = torch.stack([data[i:i + self.window_size] for i in random_idx]).to(device)
         output_from_nn = torch.stack([data[i+1: i + 1 + self.window_size] for i in random_idx]).to(device)
-        self.logger.info(f"Batch created for {data_type} data with shape: {input_to_nn.shape}, {output_from_nn.shape}")
         return input_to_nn, output_from_nn
 
 if __name__ == "__main__":
