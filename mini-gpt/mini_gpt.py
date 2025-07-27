@@ -301,10 +301,6 @@ class MiniGPT:
                 end_time = time.time()
                 self.logger.info(f"Training completed in {end_time - start_time:.2f} seconds.")
 
-                model_save_path = os.path.join(self.weights_path, "mini_gpt_weights.pth")
-                self.logger.info(f"Saving model weights to {model_save_path}...")
-                torch.save(mini_gpt.state_dict(), model_save_path)
-
                 # Eval phase
                 num_val_batches = 10 # Estimate loss on few batches
                 avg_val_loss = 0
@@ -316,6 +312,10 @@ class MiniGPT:
 
             self.logger.info("Training & Eval completed!")
 
+            model_save_path = os.path.join(self.weights_path, "mini_gpt_weights.pth")
+            self.logger.info(f"Saving model weights to {model_save_path}...")
+            torch.save(mini_gpt.state_dict(), model_save_path)
+            
         # Use the model to generate text - Inference mode 
         self.logger.info("Generating text with the MiniGPT model...")
         start_sequence = "\n"
