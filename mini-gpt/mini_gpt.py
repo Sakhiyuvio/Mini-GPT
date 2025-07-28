@@ -35,7 +35,7 @@ class MiniGPTParams:
     num_heads: int = 4 # number of attention heads in multi-headed attention
     num_layers: int = 4  # number of layers in the transformer model
     learning_rate: float = 3e-4 # learning rate for the optimizer
-    num_epochs: int = 1 #10  # number of epochs to train the model
+    num_epochs: int = 3 #10  # number of epochs to train the model
     
 class Tokenizer:
     def __init__(self, corpus_text: str):
@@ -304,18 +304,19 @@ class MiniGPT:
                     loss_train = mini_gpt.train_step(x_train, y_train, optimizer, learning_rate = self.lr)  # Train the model for 10 epochs, 16 batches at a time
                     if batch % log_interval == 0:
                         self.logger.info(f"Epoch {epoch + 1}, Batch {batch + 1}, Training loss: {loss_train}")  # Log the training loss
-                end_time = time.time()
-                self.logger.info(f"Training completed in {end_time - start_time:.2f} seconds.")
 
-                # Eval phase
-                num_val_batches = 10 # Estimate loss on few batches
-                avg_val_loss = 0
-                with torch.no_grad():
+            end_time = time.time()
+            self.logger.info(f"Training completed in {end_time - start_time:.2f} seconds.")
+
+            # Eval phase
+            num_val_batches = 10 # Estimate loss on few batches
+            avg_val_loss = 0
+            with torch.no_grad():
+                for batch in range(num_val_batches):
                     x_val, y_val = self.create_batch(DataType.TEST)
                     avg_val_loss += mini_gpt.validate(x_val, y_val)
 
-                self.logger.info(f"--- End of epoch {epoch + 1}, Average Validation Loss: {avg_val_loss/num_val_batches}")
-
+            self.logger.info(f"Average Validation Loss from 10 batches: {avg_val_loss/num_val_batches}")
             self.logger.info("Training & Eval completed!")
 
             model_save_path = os.path.join(self.weights_path, "mini_gpt_weights.pth")
